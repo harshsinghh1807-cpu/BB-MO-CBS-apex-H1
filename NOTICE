@@ -19,3 +19,12 @@ Changes made for BB-MO-CBS-apex-H1:
 The baseline solver implementations remain available; the new algorithm is
 implemented in pexHSolver.cpp and ConflictAnalysis.cpp rather than silently
 replacing the original pexSolver run loop.
+
+Further audit improvements (2026-11-01):
+- Added a shared pex baseline with H disabled for controlled comparisons; preserved
+  the imported implementation under BBMOCBS-pex-legacy.
+- Corrected legacy output cost/path indices after filtering and sorting.
+- Added exact scalar A*, canonical-constraint memoization, cached partial merge
+  costs, and bounded low-level memoization with CAT-sensitive searches excluded.
+- Added a three-objective comparison runner with independent path validation,
+  cost-set comparison, reproducible logs and a unit travel-time cost grid.

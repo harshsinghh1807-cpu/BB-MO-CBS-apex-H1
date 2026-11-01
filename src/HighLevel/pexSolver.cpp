@@ -444,48 +444,33 @@ void pexSolver::calculate_CAT(HighLevelNodePtr node, VertexCAT& vertex_cat, Edge
 }
 
 
-void pexSolver::post_process(std::vector<CostVector>& SOLUTIONS_apex, std::vector<CostVector>& SOLUTIONS_cost){
-    auto _SOLUTIONS_apex = SOLUTIONS_apex;
-    auto _SOLUTIONS_cost = SOLUTIONS_cost;
-    
-    SOLUTIONS_cost = std::vector<CostVector>();
-    SOLUTIONS_apex = std::vector<CostVector>();
-
-    for(int i = 0; i < _SOLUTIONS_apex.size(); i++){
-        bool dominated = false;
-        for(int j = 0; j < SOLUTIONS_apex.size(); j++){
-            if(is_dominated(_SOLUTIONS_apex.at(i), SOLUTIONS_cost.at(j), EPS)){
-                SOLUTIONS_apex.at(j) = vector_min(SOLUTIONS_apex.at(j), _SOLUTIONS_apex.at(i));
-                dominated = true;
+void pexSolver::post_process(std::vector<CostVector>& apexes, std::vector<CostVector>& costs, HSolutionID& paths) {
+    // Keep each apex, actual cost and path attached while filtering and sorting.
+    // The upstream version indexed the original costs using filtered indices,
+    // and never reordered paths, which could misreport the final cost vectors.
+    std::vector<size_t> kept;
+    for (size_t i = 0; i < apexes.size(); ++i) {
+        bool covered = false;
+        for (size_t j : kept) {
+            if (is_dominated(apexes[i], costs[j], EPS)) {
+                apexes[j] = vector_min(apexes[j], apexes[i]);
+                covered = true;
                 break;
             }
         }
-        if(!dominated){
-            SOLUTIONS_apex.push_back(_SOLUTIONS_apex.at(i));
-            SOLUTIONS_cost.push_back(_SOLUTIONS_cost.at(i));
-        }
+        if (!covered) kept.push_back(i);
     }
-    
-    
-    std::vector<std::pair<CostVector, int>> apex_id_list(SOLUTIONS_apex.size());
-    for(int i = 0; i < SOLUTIONS_apex.size(); i++){
-        apex_id_list.at(i) = std::make_pair(SOLUTIONS_apex.at(i), i);
+    std::stable_sort(kept.begin(), kept.end(), [&](size_t a, size_t b) { return apexes[a] < apexes[b]; });
+    std::vector<CostVector> filtered_apexes, filtered_costs;
+    HSolutionID filtered_paths;
+    for (size_t i : kept) {
+        filtered_apexes.push_back(apexes[i]);
+        filtered_costs.push_back(costs[i]);
+        filtered_paths.push_back(paths.at(i));
     }
-    
-    SOLUTIONS_cost = std::vector<CostVector>();
-    SOLUTIONS_apex = std::vector<CostVector>();
-    std::sort(apex_id_list.begin(), apex_id_list.end(), [](const std::pair<CostVector, int>& a, const std::pair<CostVector, int>& b){
-        for(int i = 0; i < a.first.size(); i++){
-            if(a.first.at(i) != b.first.at(i)){
-                return a.first.at(i) < b.first.at(i);
-            }
-        }
-        return true;
-    });
-    for(auto ele: apex_id_list){
-        SOLUTIONS_apex.push_back(ele.first);
-        SOLUTIONS_cost.push_back(_SOLUTIONS_cost.at(ele.second));
-    }
+    apexes = std::move(filtered_apexes);
+    costs = std::move(filtered_costs);
+    paths = std::move(filtered_paths);
 }
 
 OutputTuple pexSolver::run(std::vector<Edge>& edges, std::vector<std::pair<size_t, size_t>>& start_goal, HSolutionID& SOLUTIONS_waypoints, std::vector<CostVector>& SOLUTIONS_cost, LoggerPtr& logger)
@@ -707,7 +692,7 @@ OutputTuple pexSolver::run(std::vector<Edge>& edges, std::vector<std::pair<size_
     precise_end_time = std::chrono::high_resolution_clock::now();
     TotalTime = (double)(std::chrono::duration_cast<std::chrono::microseconds>(precise_end_time - precise_start_time).count())/1000000.0;
     
-    post_process(SOLUTIONS_apex, SOLUTIONS_cost);
+    post_process(SOLUTIONS_apex, SOLUTIONS_cost, SOLUTIONS_waypoints);
 
     if(is_success){
         output << "SUCCESS" << std::endl;

@@ -8,6 +8,25 @@
 
 extern std::ofstream output;
 using namespace pexh;
+namespace {
+struct ScopedSeconds {
+    double& seconds;
+    Clock::time_point start = Clock::now();
+    explicit ScopedSeconds(double& target) : seconds(target) {}
+    ~ScopedSeconds() { seconds += std::chrono::duration<double>(Clock::now()-start).count(); }
+};
+// Sorted, deduplicated constraint tuples make equivalent subproblems share a key.
+std::vector<size_t> scalar_key(size_t agent, size_t objective, const VertexConstraint& vertices, const EdgeConstraint& edges) {
+    std::vector<std::array<size_t,4>> entries;
+    for (const auto& t : vertices) for (size_t v : t.second) entries.push_back({0,t.first,v,0});
+    for (const auto& t : edges) for (const auto& v : t.second) for (size_t w : v.second) entries.push_back({1,t.first,v.first,w});
+    std::sort(entries.begin(), entries.end());
+    entries.erase(std::unique(entries.begin(), entries.end()), entries.end());
+    std::vector<size_t> key{agent, objective};
+    for (const auto& entry : entries) key.insert(key.end(), entry.begin(), entry.end());
+    return key;
+}
+}
 
 pexHSolver::pexHSolver(size_t graph_size, int agent_num, int dim, int turn_dim, int turn_cost, int time_limit)
     : HighLevelSolver(graph_size, agent_num, Algorithm::BBMOCBS_PEX, false, dim, turn_dim, turn_cost, time_limit) {
@@ -37,29 +56,31 @@ Solution pexHSolver::representative(const SearchNode& node, const JointPathPair&
     return result;
 }
 void pexHSolver::merge_joint_paths(SearchNode& node) {
-    std::vector<JointPathPair> partial{{CostVector(DIM,0), {}}};
+    struct Partial { JointPathPair joint; CostVector cost; size_t conflicts = 0; };
+    std::vector<Partial> partial{{{CostVector(DIM,0), {}}, CostVector(DIM,0), 0}};
     for (size_t x = 0; x < static_cast<size_t>(AGENT_NUM); ++x) {
-        std::vector<JointPathPair> next;
+        std::vector<Partial> next;
         std::vector<size_t> path_ids;
         for (const auto& path : node.sop_apex[x]) path_ids.push_back(path.first);
         std::sort(path_ids.begin(), path_ids.end());
         for (const auto& prefix : partial) for (size_t id : path_ids) {
             check_deadline(deadline_);
-            JointPathPair candidate{sum(prefix.first, node.sop_apex[x].at(id)), prefix.second};
-            candidate.second.push_back(id);
-            const auto candidate_rep = representative(node, candidate);
+            Partial candidate{{sum(prefix.joint.first, node.sop_apex[x].at(id)), prefix.joint.second},
+                              sum(prefix.cost, node.sop_cost[x].at(id)), 0};
+            candidate.joint.second.push_back(id);
+            if (strategy_ == MergingStrategy::CONFLICT_BASED)
+                candidate.conflicts = conflicts(representative(node, candidate.joint).paths).size();
             bool merged = false;
             for (auto& existing : next) {
                 check_deadline(deadline_);
-                auto apex = minimum(existing.first, candidate.first);
-                const auto existing_rep = representative(node, existing);
-                bool keep_existing = covered_by(apex, existing_rep.cost, eps_);
-                bool keep_candidate = covered_by(apex, candidate_rep.cost, eps_);
+                auto apex = minimum(existing.joint.first, candidate.joint.first);
+                bool keep_existing = covered_by(apex, existing.cost, eps_);
+                bool keep_candidate = covered_by(apex, candidate.cost, eps_);
                 if (!keep_existing && !keep_candidate) continue;
                 bool choose_candidate = !keep_existing;
                 if (keep_existing && keep_candidate) {
                     if (strategy_ == MergingStrategy::CONFLICT_BASED)
-                        choose_candidate = conflicts(candidate_rep.paths).size() < conflicts(existing_rep.paths).size();
+                        choose_candidate = candidate.conflicts < existing.conflicts;
                     else {
                         auto ratio = [&](const CostVector& cost) {
                             long double r = 1;
@@ -67,11 +88,11 @@ void pexHSolver::merge_joint_paths(SearchNode& node) {
                                 if (apex[o]) r = std::max(r, static_cast<long double>(cost[o])/apex[o]);
                             return r;
                         };
-                        choose_candidate = ratio(candidate_rep.cost) < ratio(existing_rep.cost);
+                        choose_candidate = ratio(candidate.cost) < ratio(existing.cost);
                     }
                 }
-                if (choose_candidate) existing.second = candidate.second;
-                existing.first = std::move(apex);
+                if (choose_candidate) existing = candidate;
+                existing.joint.first = std::move(apex);
                 merged = true;
                 break;
             }
@@ -79,8 +100,9 @@ void pexHSolver::merge_joint_paths(SearchNode& node) {
         }
         partial = std::move(next);
     }
-    std::sort(partial.begin(), partial.end());
-    node.all_jps.assign(partial.begin(), partial.end());
+    std::sort(partial.begin(), partial.end(), [](const Partial& a, const Partial& b) { return a.joint < b.joint; });
+    node.all_jps.clear();
+    for (auto& entry : partial) node.all_jps.push_back(std::move(entry.joint));
 }
 void pexHSolver::prune(SearchNode& node) {
     for (auto it = node.all_jps.begin(); it != node.all_jps.end();) {
@@ -130,9 +152,8 @@ OutputTuple pexHSolver::run(std::vector<Edge>& edges, std::vector<std::pair<size
         open.push({node->key, serial++, node});
     };
     auto merge = [&](SearchNode& node) {
-        auto t = Clock::now();
+        ScopedSeconds timer(merge_seconds);
         merge_joint_paths(node);
-        merge_seconds += std::chrono::duration<double>(Clock::now()-t).count();
     };
     try {
         std::set<size_t> starts, goals;
@@ -144,8 +165,49 @@ OutputTuple pexHSolver::run(std::vector<Edge>& edges, std::vector<std::pair<size
         std::vector<std::vector<CostVector>> distances;
         if (!trivially_infeasible)
             for (const auto& endpoint : endpoints) distances.push_back(reverse_distances(inverse, endpoint.second, deadline_));
+        std::map<std::vector<size_t>, size_t> scalar_cache;
+        struct CachedPaths { PathSet paths; CostSet apexes, costs; std::unordered_map<int,int> conflicts; };
+        std::map<std::vector<size_t>, CachedPaths> path_cache;
+        size_t cached_waypoints = 0;
+        ScalarOracle scalar_oracle = [&](size_t x, size_t objective, const VertexConstraint& vertices, const EdgeConstraint& constraints) {
+            check_deadline(deadline_);
+            std::vector<size_t> key;
+            if (scalar_optimizations_) {
+                key = scalar_key(x, objective, vertices, constraints);
+                auto it = scalar_cache.find(key);
+                if (it != scalar_cache.end()) { ++stats_.scalar_cache_hits; return it->second; }
+            }
+            ++stats_.scalar_searches;
+            ScopedSeconds timer(stats_.scalar_seconds);
+            size_t value = exact_shortest_path(graph, endpoints[x].first, endpoints[x].second, objective,
+                                              vertices, constraints, TURN_DIM, TURN_COST, deadline_,
+                                              scalar_optimizations_ ? &distances[x] : nullptr, &stats_.scalar_expansions);
+            if (scalar_optimizations_) {
+                // Bound auxiliary cache memory; eviction changes performance only.
+                if (scalar_cache.size() >= 100000) scalar_cache.clear();
+                scalar_cache.emplace(std::move(key), value);
+            }
+            return value;
+        };
         auto low_level = [&](SearchNode& node, size_t x, const std::vector<std::vector<size_t>>& rep) {
             check_deadline(deadline_);
+            ++stats_.low_level_queries;
+            // With conflict-based merging the CAT depends on other agents' paths,
+            // so constraints alone are not a valid cache key. Cache only MORE_SLACK.
+            const bool cacheable = low_level_cache_ && strategy_ == MergingStrategy::MORE_SLACK;
+            std::vector<size_t> key;
+            if (cacheable) {
+                key = scalar_key(x, MAX_COST, node.vertex_constraints[x], node.edge_constraints[x]);
+                auto found = path_cache.find(key);
+                if (found != path_cache.end()) {
+                    ++stats_.low_level_cache_hits;
+                    node.sop_waypoints[x] = found->second.paths;
+                    node.sop_apex[x] = found->second.apexes;
+                    node.sop_cost[x] = found->second.costs;
+                    node.conflict_num = found->second.conflicts;
+                    return;
+                }
+            }
             ++stats_.low_level_searches;
             VertexCAT vertices;
             EdgeCAT edge_cat;
@@ -168,13 +230,23 @@ OutputTuple pexHSolver::run(std::vector<Edge>& edges, std::vector<std::pair<size
             ApexSearch solver(graph, epsilon, epsilon, TURN_DIM, TURN_COST, logger);
             solver.set_merge_strategy(strategy_);
             solver.set_constraint_safe_search(deadline_);
-            auto t = Clock::now();
+            ScopedSeconds timer(low_seconds);
             solver(node.sop_waypoints[x], node.sop_apex[x], node.sop_cost[x],
                    endpoints[x].first, endpoints[x].second, heuristic,
                    node.vertex_constraints[x], node.edge_constraints[x], TIME_LIMIT,
                    vertices, edge_cat, node.conflict_num);
-            low_seconds += std::chrono::duration<double>(Clock::now()-t).count();
             check_deadline(deadline_);
+            if (cacheable) {
+                size_t waypoints = 1; // count even infeasible results toward the budget
+                for (const auto& path : node.sop_waypoints[x]) waypoints += path.second.size();
+                if (waypoints <= 1000000) {
+                    if (cached_waypoints + waypoints > 1000000 || path_cache.size() >= 10000) {
+                        path_cache.clear(); cached_waypoints = 0;
+                    }
+                    path_cache.emplace(std::move(key), CachedPaths{node.sop_waypoints[x],node.sop_apex[x],node.sop_cost[x],node.conflict_num});
+                    cached_waypoints += waypoints;
+                }
+            }
         };
         auto root = std::make_shared<SearchNode>(AGENT_NUM);
         bool feasible = !trivially_infeasible;
@@ -199,7 +271,8 @@ OutputTuple pexHSolver::run(std::vector<Edge>& edges, std::vector<std::pair<size
                 continue;
             }
             auto rep = representative(*node, node->all_jps.front());
-            if (conflicts(rep.paths).empty()) {
+            const auto pair_conflicts = conflicts(rep.paths);
+            if (pair_conflicts.empty()) {
                 add_solution(std::move(rep), solutions_, eps_);
                 node->all_jps.pop_front();
                 if (!node->all_jps.empty()) ++stats_.representative_changes;
@@ -207,27 +280,34 @@ OutputTuple pexHSolver::run(std::vector<Edge>& edges, std::vector<std::pair<size
                 if (!node->all_jps.empty()) enqueue(node, node->all_jps.front().first);
                 continue;
             }
-            if (!node->analysis) {
-                ++stats_.analyses;
-                node->analysis = std::make_shared<Analysis>(analyze(*node, rep.paths, graph, endpoints, k_,
-                                                                  TURN_DIM, TURN_COST, deadline_, stats_.scalar_searches));
-                stats_.max_matching = std::max(stats_.max_matching, node->analysis->matching.size());
-            } else ++stats_.analysis_cache_hits;
-            const auto& analysis = *node->analysis;
-            if (analysis.nondominated.empty()) { ++stats_.nodes_pruned; continue; }
-            auto key = std::max(node->all_jps.front().first, analysis.nondominated.front());
-            if (key > node->key) {
-                ++stats_.lazy_reinsertions;
-                enqueue(node, key); // preserve analysis when only the priority changes
-                continue;
+            Conflict conflict = pair_conflicts.front();
+            if (use_heuristic_) {
+                if (!node->analysis) {
+                    ++stats_.analyses;
+                    ScopedSeconds timer(stats_.analysis_seconds);
+                    node->analysis = std::make_shared<Analysis>(analyze(*node, rep.paths, graph, endpoints, k_,
+                        TURN_DIM, TURN_COST, deadline_, stats_.scalar_queries, scalar_oracle));
+                    stats_.max_matching = std::max(stats_.max_matching, node->analysis->matching.size());
+                } else ++stats_.analysis_cache_hits;
+                const auto& analysis = *node->analysis;
+                if (analysis.nondominated.empty()) { ++stats_.nodes_pruned; continue; }
+                auto key = std::max(node->all_jps.front().first, analysis.nondominated.front());
+                if (key > node->key) {
+                    ++stats_.lazy_reinsertions;
+                    enqueue(node, key); // preserve analysis when only the priority changes
+                    continue;
+                }
+                if (bound_covered(analysis.nondominated, solutions_, eps_)) { ++stats_.nodes_pruned; continue; }
+                conflict = analysis.matching.front().conflict;
             }
-            if (bound_covered(analysis.nondominated, solutions_, eps_)) { ++stats_.nodes_pruned; continue; }
             ++splits;
-            const auto& conflict = analysis.matching.front().conflict;
             for (int side = 0; side < 2; ++side) {
                 check_deadline(deadline_);
-                auto bounds = child_bounds(analysis.full, side); // deliberately use Full before global ND
-                if (bound_covered(bounds, solutions_, eps_)) { ++stats_.children_pruned; continue; }
+                std::vector<CostVector> bounds;
+                if (use_heuristic_) {
+                    bounds = child_bounds(node->analysis->full, side); // Full, not global ND
+                    if (bound_covered(bounds, solutions_, eps_)) { ++stats_.children_pruned; continue; }
+                }
                 auto child = std::make_shared<SearchNode>(*node);
                 child->analysis.reset();
                 child->all_jps.clear();
@@ -237,7 +317,8 @@ OutputTuple pexHSolver::run(std::vector<Edge>& edges, std::vector<std::pair<size
                 low_level(*child, x, rep.paths);
                 if (child->sop_waypoints[x].empty()) continue;
                 merge(*child);
-                if (!child->all_jps.empty()) enqueue(child, std::max(child->all_jps.front().first, bounds.front()));
+                if (!child->all_jps.empty()) enqueue(child, use_heuristic_
+                    ? std::max(child->all_jps.front().first, bounds.front()) : child->all_jps.front().first);
             }
         }
         completed_ = true;
@@ -249,12 +330,16 @@ OutputTuple pexHSolver::run(std::vector<Edge>& edges, std::vector<std::pair<size
     for (const auto& solution : solutions_) { paths.push_back(solution.paths); costs.push_back(solution.cost); }
     const double seconds = std::chrono::duration<double>(Clock::now()-started).count();
     output << (completed_ ? (solutions_.empty() ? "INFEASIBLE" : "SUCCESS") : "TIMEOUT") << '\n';
-    output << "algorithm: BBMOCBS-pex-H\nepsilon: " << eps_ << "\nmatching_limit: " << k_ << '\n';
+    output << "algorithm: " << algorithm_name() << "\nepsilon: " << eps_ << "\nmatching_limit: " << k_ << '\n';
     for (const auto& solution : solutions_) output << "apex: " << solution.apex << " cost: " << solution.cost << '\n';
     output << "ConflictAnalyses = " << stats_.analyses << "\nScalarSearches = " << stats_.scalar_searches
            << "\nLazyReinsertions = " << stats_.lazy_reinsertions << "\nNodesPrunedByBounds = " << stats_.nodes_pruned
            << "\nChildrenPrunedByBounds = " << stats_.children_pruned << "\nLowLevelSearches = " << stats_.low_level_searches
            << "\nMaxMatching = " << stats_.max_matching << "\nAnalysisCacheHits = " << stats_.analysis_cache_hits
-           << "\nRepresentativeChanges = " << stats_.representative_changes << '\n';
+           << "\nRepresentativeChanges = " << stats_.representative_changes
+           << "\nScalarQueries = " << stats_.scalar_queries << "\nScalarCacheHits = " << stats_.scalar_cache_hits
+           << "\nScalarExpansions = " << stats_.scalar_expansions << "\nConflictAnalysisTime = " << stats_.analysis_seconds
+           << "\nScalarSearchTime = " << stats_.scalar_seconds << '\n';
+    output << "LowLevelQueries = " << stats_.low_level_queries << "\nLowLevelCacheHits = " << stats_.low_level_cache_hits << '\n';
     return std::make_tuple(merge_seconds, low_seconds, seconds, splits, static_cast<int>(solutions_.size()));
 }

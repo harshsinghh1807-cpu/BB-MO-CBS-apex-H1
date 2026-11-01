@@ -59,11 +59,64 @@ A larger supplied example:
 ```
 
 Optional `--CB true` prefers representatives with fewer conflicts when merging.
-The default is `--CB false`. `--eager false` is required for pex-H, which follows
-the supplied representative-at-a-time algorithm. The original `BBMOCBS-pex`,
-`BBMOCBS-eps` and `BBMOCBS-k` remain selectable with `-a`; they retain their original
-algorithm behavior and do not use the new bound analysis. `BBMOCBS-apex-H1` is an
-alias for `BBMOCBS-pex-H` (the K option still applies).
+The default is `--CB false`. `--eager false` is required for both shared pex solvers, which follow
+the supplied representative-at-a-time algorithm. `BBMOCBS-pex` now runs the same implementation as H with the H steps disabled:
+same low-level search, merging, goal occupancy, solution bookkeeping, and deadline.
+This makes the comparison measure the heuristic. The imported implementation is
+still available as `BBMOCBS-pex-legacy`, with its final cost/path alignment bug fixed.
+Legacy eager updates are available only with that legacy name. `BBMOCBS-eps` and
+`BBMOCBS-k` remain available. `BBMOCBS-pex-H1` and `BBMOCBS-apex-H1` are aliases for
+`BBMOCBS-pex-H`; use `-K 1` for H1.
+
+## Three-objective terminal comparison
+
+The third bundled grid, `example/travel-time.cost`, charges one per move or wait.
+The objectives are the two original cost grids plus sum of travel times (not
+makespan). All agents stay at their goals after final arrival, without extra cost.
+
+```sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j 4
+ctest --test-dir build --output-on-failure
+python3 scripts/compare_pex.py --binary build/bin/bbmocbs_approx \
+  --agents 2 4 6 8 10 12 14 16 --epsilon 0.05 --time-limit 300
+```
+
+This automatically runs **both** pex and H1, prints screenshot-style result lines,
+and saves a timestamped `results/compare-*/` directory containing:
+
+- `comparison.log`: the same summary printed to the terminal;
+- `summary.csv`: timing, split counts, cache/pruning counters and validation status;
+- `comparisons.json`: full cost sets, set differences, equality and coverage checks;
+- per-run `.log`, `.txt`, and `.json` files: progress, solver reports and actual paths;
+- `config.json` and `source.patch`: inputs and source-state information.
+
+Pass `--repeats 3` for repeated timings; the solver order alternates between repeats.
+Pass `--scenarios path/to/one.scen path/to/two.scen` to compare multiple scenarios for
+one map, and `--map`/`--costs c1 c2 c3` for a different dataset. Defaults use the
+bundled 32×32 map and its single scenario. Each invocation creates a new output
+folder; an explicit `--output` folder must not already exist.
+
+To check **exact Pareto cost equality**, use epsilon zero:
+
+```sh
+python3 scripts/compare_pex.py --binary build/bin/bbmocbs_approx \
+  --agents 2 4 6 8 --epsilon 0 --time-limit 300
+```
+
+For epsilon greater than zero, different representative cost vectors or counts
+are permitted. The script validates costs against paths, collision freedom,
+apex bounds, and bidirectional epsilon coverage between returned sets. Mutual
+coverage is a consistency check, not an independent proof of global completeness.
+If either solver times out, front comparison is marked `INCOMPLETE`.
+The script exits nonzero on invalid paths/costs or a completed comparison failure.
+
+Exact scalar A* uses admissible reverse distances and a bounded constraint-key
+cache. Deterministic low-level path sets are cached under identical constraints
+when `--CB false`; CAT-dependent searches with `--CB true` bypass this cache.
+For an unoptimized reference run, pass `--scalar-optimizations false
+--low-level-cache false` to the comparison script (the executable uses underscore
+option names). These options affect work performed, not approximation factors.
 
 ## Inputs and output
 
@@ -85,7 +138,7 @@ vectors, timing, and counters for analyses, exact scalar searches, cache reuse,
 priority updates, node pruning and child pruning.
 
 `--paths_file paths.json` writes machine-readable solutions and completion status.
-Paths contain vertex IDs assigned to traversable map cells in row-major order.
+Both shared solvers support this export. Paths contain vertex IDs assigned to traversable map cells in row-major order.
 The JSON keeps apex, actual cost and paths together for each solution.
 
 - `SUCCESS` / `completed: true`: search exhausted Open and returned solutions.
@@ -94,7 +147,7 @@ The JSON keeps apex, actual cost and paths together for each solution.
   incumbents are feasible, but coverage of the entire Pareto front is uncertified.
 
 Exit codes: 0 for completed search (including infeasible), 1 for input/runtime
-errors, 2 for a pex-H timeout. General unsolvable MAPF instances may reach the
+errors, 2 for a shared pex solver timeout. General unsolvable MAPF instances may reach the
 cutoff; the finite single-agent horizon does not impose a joint CBS depth cutoff.
 
 Validate an exported example independently:
@@ -122,5 +175,7 @@ exceptions and remain enabled in Release builds. `validation/smoke_cli.py` check
 input errors, both solver aliases, turn costs, and JSON output.
 
 These are bounded regression checks, not a formal proof of the supplied algorithm
-or a performance study. The retained legacy solver is useful for comparisons, but
-the independent oracle is the correctness reference for the tiny instances.
+or a performance study. The independent oracle is the correctness reference for the tiny instances.
+Optimized H is also checked against uncached scalar Dijkstra with identical
+returned paths and costs. See [the audit and measured results](docs/HEURISTIC_AUDIT.md)
+for the scope and limitations of the three-objective comparison.

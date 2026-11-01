@@ -103,7 +103,7 @@ void constrain(const Conflict& conflict, int side, VertexConstraint& vertices, E
 }
 Analysis analyze(const HighLevelNode& node, const std::vector<std::vector<size_t>>& representative,
                  const AdjacencyMatrix& graph, const std::vector<std::pair<size_t, size_t>>& endpoints,
-                 size_t k, int turn_dim, int turn_cost, Deadline deadline, size_t& scalar_searches) {
+                 size_t k, int turn_dim, int turn_cost, Deadline deadline, size_t& scalar_searches, const ScalarOracle& oracle) {
     if (k < 1) throw std::invalid_argument("matching limit K must be positive");
     const size_t dim = graph.get_num_of_objectives();
     std::vector<CostVector> ideals(endpoints.size(), CostVector(dim, MAX_COST));
@@ -127,7 +127,7 @@ Analysis analyze(const HighLevelNode& node, const std::vector<std::vector<size_t
             pair.delta[side].assign(dim, 0);
             for (size_t o = 0; o < dim; ++o) {
                 ++scalar_searches;
-                size_t cost = exact_shortest_path(graph, endpoints[x].first, endpoints[x].second,
+                size_t cost = oracle ? oracle(x, o, vertices, edges) : exact_shortest_path(graph, endpoints[x].first, endpoints[x].second,
                                                  o, vertices, edges, turn_dim, turn_cost, deadline);
                 if (cost == MAX_COST) {
                     pair.delta[side].assign(dim, MAX_COST);

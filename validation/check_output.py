@@ -2,7 +2,13 @@
 """Independently validate pex-H JSON paths against a MovingAI map and cost grids."""
 import argparse
 import json
+import math
 from pathlib import Path
+
+
+def require(condition, message):
+    if not condition:
+        raise ValueError(message)
 
 
 def validate(map_path, scenario_path, cost_paths, result_path, agents, turn_dim=-1, turn_cost=5):
@@ -20,34 +26,41 @@ def validate(map_path, scenario_path, cost_paths, result_path, agents, turn_dim=
     grids = [[list(map(int, line.split())) for line in Path(p).read_text().splitlines()]
              for p in cost_paths]
     result = json.loads(Path(result_path).read_text())
-    assert len(endpoints) == agents
-    assert result['algorithm'] == 'BBMOCBS-pex-H'
+    require(len(endpoints) == agents, 'scenario has fewer agents than requested')
+    require(all(len(grid) == height and all(len(row) == width for row in grid) for grid in grids), 'cost grid dimensions differ from map')
+    require(isinstance(result['completed'], bool), 'completed must be Boolean')
+    require(math.isfinite(result['epsilon']) and result['epsilon'] >= 0, 'invalid epsilon')
+    require(result.get('objectives', len(grids)) == len(grids), 'wrong objective dimension')
+    require(result['algorithm'] in ('BBMOCBS-pex-H', 'BBMOCBS-pex'), 'unexpected algorithm')
     for solution in result['solutions']:
         paths = solution['paths']
-        assert len(paths) == agents
+        require(len(paths) == agents, 'wrong agent count')
+        require(len(solution['cost']) == len(grids) and len(solution['apex']) == len(grids), 'wrong cost/apex dimension')
+        require(all(isinstance(c, int) and c >= 0 for c in solution['cost'] + solution['apex']), 'costs must be nonnegative integers')
         actual = [0] * len(grids)
         for agent, path in enumerate(paths):
-            assert path and (path[0], path[-1]) == endpoints[agent]
+            require(path and all(isinstance(v, int) and 0 <= v < len(cells) for v in path), 'invalid path vertex')
+            require((path[0], path[-1]) == endpoints[agent], 'path endpoints disagree with scenario')
             previous_direction = (0, 0)
             for t, (u, v) in enumerate(zip(path, path[1:])):
                 a, b = cells[u], cells[v]
                 direction = b[0]-a[0], b[1]-a[1]
-                assert abs(direction[0])+abs(direction[1]) <= 1
+                require(abs(direction[0])+abs(direction[1]) <= 1, 'path makes an illegal move')
                 for objective, grid in enumerate(grids):
                     actual[objective] += grid[b[0]][b[1]]
                     if objective == turn_dim and direction != previous_direction:
                         actual[objective] += turn_cost
                 previous_direction = direction
-        assert actual == solution['cost'], (actual, solution['cost'])
-        assert all(c <= (1+result['epsilon'])*a + 1e-9
-                   for c, a in zip(actual, solution['apex']))
+        require(actual == solution['cost'], f"cost mismatch: recomputed {actual}, reported {solution['cost']}")
+        require(all(c <= (1+result['epsilon'])*a + 1e-9
+                    for c, a in zip(actual, solution['apex'])), 'cost is not epsilon-bounded by its apex')
         position = lambda agent, t: paths[agent][min(t, len(paths[agent])-1)]
         for t in range(max(map(len, paths))):
             for a in range(agents):
                 for b in range(a+1, agents):
-                    assert position(a, t) != position(b, t), ('vertex conflict', a, b, t)
-                    assert not (position(a, t) == position(b, t+1) and
-                                position(b, t) == position(a, t+1)), ('edge conflict', a, b, t)
+                    require(position(a, t) != position(b, t), f'vertex conflict: agents {a}, {b}, time {t}')
+                    require(not (position(a, t) == position(b, t+1) and
+                                 position(b, t) == position(a, t+1)), f'edge conflict: agents {a}, {b}, time {t}')
     return result
 
 

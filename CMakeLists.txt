@@ -27,5 +27,7 @@ if(BUILD_REGRESSION_CHECKS)
   if(Python3_Interpreter_FOUND)
     add_test(NAME pex_h_cli COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/validation/smoke_cli.py $<TARGET_FILE:bbmocbs_approx>)
+    add_test(NAME pex_comparison_checks COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/validation/comparison_checks.py)
   endif()
 endif()

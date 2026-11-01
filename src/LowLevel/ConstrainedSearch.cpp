@@ -56,28 +56,43 @@ size_t transition_cost(size_t previous, size_t from, const Edge& edge,
 size_t exact_shortest_path(const AdjacencyMatrix& graph, size_t source, size_t target,
                            size_t objective, const VertexConstraint& vertices,
                            const EdgeConstraint& edges, int turn_dim, int turn_cost,
-                           Deadline deadline) {
+                           Deadline deadline, const std::vector<CostVector>* lower_bounds,
+                           size_t* expansions) {
     check_deadline(deadline);
     if (vertex_blocked(vertices, source, 0)) return MAX_COST;
     const size_t end = std::max(constraint_end(vertices, edges), earliest_goal_time(target, vertices, edges));
     const size_t goal_time = earliest_goal_time(target, vertices, edges);
     using State = std::tuple<size_t, size_t, size_t>; // vertex, previous vertex, folded time
-    using Entry = std::pair<size_t, State>;
+    // Exact A*: reverse distances ignore constraints (and nonnegative turns),
+    // hence are admissible. Greater g breaks f ties without weighting the heuristic.
+    auto h = [&](size_t v) { return lower_bounds ? lower_bounds->at(v).at(objective) : 0; };
+    if (h(source) == MAX_COST) return MAX_COST;
+    struct StateHash {
+        size_t operator()(const State& s) const {
+            size_t seed = std::get<0>(s);
+            for (size_t x : {std::get<1>(s), std::get<2>(s)})
+                seed ^= x + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            return seed;
+        }
+    };
+    using Entry = std::tuple<size_t, size_t, State>; // f, MAX_COST-g, state
     std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> open;
-    std::map<State, size_t> distance;
+    std::unordered_map<State, size_t, StateHash> distance;
     State root(source, MAX_COST, 0);
     distance[root] = 0;
-    open.emplace(0, root);
+    open.emplace(h(source), MAX_COST, root);
     while (!open.empty()) {
         check_deadline(deadline);
         auto entry = open.top(); open.pop();
-        const auto state = entry.second;
-        const size_t cost = entry.first;
+        const auto state = std::get<2>(entry);
+        const size_t cost = MAX_COST - std::get<1>(entry);
         if (distance.at(state) != cost) continue;
         size_t vertex, previous, time;
         std::tie(vertex, previous, time) = state;
+        if (expansions) ++*expansions;
         if (vertex == target && time >= goal_time) return cost;
         for (const auto& edge : graph[vertex]) {
+            if (h(edge.target) == MAX_COST) continue;
             if (vertex_blocked(vertices, edge.target, time+1) ||
                 edge_blocked(edges, vertex, edge.target, time)) continue;
             const size_t next_cost = checked_add(cost, transition_cost(previous, vertex, edge, objective, turn_dim, turn_cost));
@@ -86,7 +101,7 @@ size_t exact_shortest_path(const AdjacencyMatrix& graph, size_t source, size_t t
             auto it = distance.find(next);
             if (it == distance.end() || next_cost < it->second) {
                 distance[next] = next_cost;
-                open.emplace(next_cost, next);
+                open.emplace(checked_add(next_cost, h(edge.target)), MAX_COST-next_cost, next);
             }
         }
     }

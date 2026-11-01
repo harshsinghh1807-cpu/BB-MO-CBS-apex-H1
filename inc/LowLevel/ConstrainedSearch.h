@@ -19,12 +19,13 @@ size_t constraint_end(const VertexConstraint& vertices, const EdgeConstraint& ed
 size_t earliest_goal_time(size_t goal, const VertexConstraint& vertices, const EdgeConstraint& edges);
 size_t transition_cost(size_t previous, size_t from, const Edge& edge,
                        size_t objective, int turn_dim, int turn_cost);
-// Independent exact scalar Dijkstra. Time is folded only after all constraints expire.
+// Exact scalar A* (Dijkstra without lower_bounds). Time folds only after constraints expire.
 // MAX_COST means proven infeasible; a timeout throws SearchTimeout instead.
 size_t exact_shortest_path(const AdjacencyMatrix& graph, size_t source, size_t target,
                            size_t objective, const VertexConstraint& vertices,
                            const EdgeConstraint& edges, int turn_dim, int turn_cost,
-                           Deadline deadline);
+                           Deadline deadline, const std::vector<CostVector>* lower_bounds = nullptr,
+                           size_t* expansions = nullptr);
 // Admissible reverse distances; omitting nonnegative turn penalties remains admissible.
 std::vector<CostVector> reverse_distances(const AdjacencyMatrix& inverse, size_t goal,
                                         Deadline deadline);

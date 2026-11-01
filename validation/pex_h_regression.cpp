@@ -1,4 +1,5 @@
 #include "HighLevel/pexHSolver.h"
+#include "HighLevel/pexSolver.h"
 #include "LowLevel/ApexSearch.h"
 #include <algorithm>
 #include <fstream>
@@ -133,6 +134,41 @@ void check_front(std::vector<Edge> edges,size_t vertices,std::vector<std::pair<s
     solver.set_merging_strategy(cb?MergingStrategy::CONFLICT_BASED:MergingStrategy::MORE_SLACK);
     HSolutionID paths;std::vector<CostVector> costs;LoggerPtr logger=nullptr;
     solver.run(edges,endpoints,paths,costs,logger);
+    // Both algorithms share every search/merge rule except the proposed H steps.
+    pexHSolver baseline(vertices,endpoints.size(),edges.front().cost.size(),-1,0,20);
+    baseline.set_use_heuristic(false);baseline.set_eps(eps);
+    baseline.set_merging_strategy(cb?MergingStrategy::CONFLICT_BASED:MergingStrategy::MORE_SLACK);
+    HSolutionID baseline_paths;std::vector<CostVector> baseline_costs;
+    baseline.run(edges,endpoints,baseline_paths,baseline_costs,logger);
+    require(baseline.completed(),"shared baseline completes");
+    verify_paths(edges,endpoints,baseline.solutions(),eps);
+    require(baseline.statistics().analyses==0&&baseline.statistics().scalar_searches==0,"baseline does not run H analysis");
+    for(const auto& optimum:exact) {
+        bool covered=false;
+        for(const auto& c:baseline_costs) {
+            bool yes=true;
+            for(size_t o=0;o<c.size();++o)if(c[o]>(1.0L+eps)*optimum[o])yes=false;
+            covered|=yes;
+        }
+        require(covered,"baseline epsilon-covers oracle");
+    }
+    if(eps==0) {
+        std::vector<CostVector> actual;
+        for(const auto& c:baseline_costs)insert_front(actual,c);
+        std::sort(actual.begin(),actual.end());
+        require(actual==exact,"baseline exact Pareto front equals oracle");
+    }
+    // Optimization changes how exact scalar bounds are computed, not their values.
+    pexHSolver uncached(vertices,endpoints.size(),edges.front().cost.size(),-1,0,20);
+    uncached.set_eps(eps);uncached.set_matching_limit(k);uncached.set_scalar_optimizations(false);
+    uncached.set_low_level_cache(false);
+    uncached.set_merging_strategy(cb?MergingStrategy::CONFLICT_BASED:MergingStrategy::MORE_SLACK);
+    HSolutionID uncached_paths;std::vector<CostVector> uncached_costs;
+    uncached.run(edges,endpoints,uncached_paths,uncached_costs,logger);
+    require(uncached.completed()&&uncached_costs==costs&&uncached_paths==paths,"optimized exact bounds preserve H costs and paths");
+    require(solver.statistics().low_level_queries == solver.statistics().low_level_searches + solver.statistics().low_level_cache_hits,
+            "low-level cache accounts for every query");
+    if (cb) require(solver.statistics().low_level_cache_hits == 0,"CAT-dependent path sets are not cached by constraints alone");
     cache_hits += solver.statistics().analysis_cache_hits;
     reinsertions += solver.statistics().lazy_reinsertions;
     representative_changes += solver.statistics().representative_changes;
@@ -157,6 +193,15 @@ void check_front(std::vector<Edge> edges,size_t vertices,std::vector<std::pair<s
     }
 }
 void bound_checks() {
+    struct LegacyAccess : pexSolver {
+        LegacyAccess() : pexSolver(3,1,BBMOCBS_PEX,false,2,-1,0,10) { set_eps(0); }
+        using pexSolver::post_process;
+    } legacy;
+    std::vector<CostVector> legacy_apex{{10,10},{11,11},{5,20}}, legacy_cost=legacy_apex;
+    HSolutionID legacy_paths{{{0}},{{1}},{{2}}};
+    legacy.post_process(legacy_apex, legacy_cost, legacy_paths);
+    require(legacy_cost==std::vector<CostVector>{{5,20},{10,10}},"legacy filtered costs retain original indices");
+    require(legacy_paths==HSolutionID{{{2}},{{0}}},"legacy output paths stay aligned with sorted costs");
     PairBound p;p.delta={CostVector{1,1},CostVector{2,2}};
     auto full=full_bounds({0,0},{p});
     require(nondominated({full[0].cost,full[1].cost})==std::vector<CostVector>{{1,1}},"global dominance fixture");
@@ -274,6 +319,10 @@ void edge_cases() {
             }
             auto exact=exact_shortest_path(graph,0,3,objective,vertices,restrictions,1,2,limit());
             require(exact==best,"scalar Dijkstra matches independent timed DP with turn costs");
+            AdjacencyMatrix inverse(4,edges,true);
+            auto lower=reverse_distances(inverse,3,limit());
+            auto astar=exact_shortest_path(graph,0,3,objective,vertices,restrictions,1,2,limit(),&lower);
+            require(astar==best,"exact scalar A-star matches independent timed DP with turn costs");
         }
     }
 }
@@ -294,6 +343,12 @@ int main() {
             for(auto edge:copy){edge.source+=4;edge.target+=4;disconnected.push_back(edge);}
             check_front(disconnected,8,{{0,1},{1,0},{4,5},{5,4}},0,2,false);
             check_front(disconnected,8,{{0,1},{1,0},{4,5},{5,4}},0.5,2,true);
+            for (unsigned seed : {3u, 17u}) {
+                auto travel=grid(2,2,3,seed);
+                for (auto& edge : travel) edge.cost[2]=1;
+                check_front(travel,4,{{0,1},{1,0}},0,1,false);
+                check_front(travel,4,{{0,1},{1,0}},0.05,1,false);
+            }
             auto zero=grid(2,2,2);
             for(auto& edge:zero)edge.cost={0,0};
             check_front(zero,4,{{0,1},{1,0}},0,1,false);

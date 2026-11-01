@@ -64,7 +64,7 @@ bounds may use different solutions; witnesses need not be unique.
   `A_n` sums those ideals; it is not the selected representative's cost.
 - Enumerate each conflicting unordered agent pair once, using its first conflict
   in temporal order. Agents remain at their last vertex after a path ends.
-- For each split side and each objective, run exact scalar Dijkstra under Ω plus
+- For each split side and each objective, run exact scalar A* (or reference Dijkstra) under Ω plus
   that side's constraint. This search does not use approximate costs for Δ.
 - Compute `delta=max(0, scalar optimum-Ideal_x[o])` with a guarded subtraction.
 - A pair is cardinal when both side vectors are nonzero; neither vector needs
@@ -89,13 +89,18 @@ raises a separate exception and never creates an infeasible delta.
 
 ## Constrained low-level search (`src/LowLevel/ConstrainedSearch.cpp`)
 
-Scalar Dijkstra uses `(vertex, previous vertex, time)` when its objective includes
+Exact scalar search uses `(vertex, previous vertex, time)` when its objective includes
 turn penalties; otherwise the previous vertex is omitted from the state key.
 Time is folded after the last timed restriction and the earliest safe final goal
 arrival. Since no later constraint distinguishes such states, this creates a finite
-exact search without an arbitrary time horizon.
+exact search without an arbitrary time horizon. Reverse distances are admissible
+and consistent (constraints and nonnegative turn costs are omitted), so A* returns
+the same optimum as Dijkstra. Its tie breaker prefers greater g at equal f; it never
+weights or inflates the heuristic. Successful exact optima, including proven
+infeasibility, can be reused for the same agent/objective/canonical constraint set.
+Timed-out searches never enter the cache.
 
-ApexSearch's optional constraint-safe mode is enabled only by pex-H. It:
+ApexSearch's optional constraint-safe mode is enabled by both shared pex variants, but not the legacy solver. It:
 
 - Checks source occupancy at time zero and skips unreachable successors.
 - Accepts final goal arrival only after the last constraint forbidding future goal
@@ -123,3 +128,30 @@ conflict-based merging and a four-agent K=2 case. Separate checks cover bound la
 bookkeeping, constrained scalar optima, goal revisits, infinity and deadlines.
 The CLI validator recomputes costs and collisions without using solver helpers.
 Large instances remain subject to exponential worst-case search and Full size.
+
+## Controlled baseline and low-level cache
+
+`BBMOCBS-pex` executes this same main loop with `use_heuristic=false`: it skips
+ConflictAnalysis, key raising, whole-node bound pruning and child-bound pruning,
+then branches on the first conflict and enqueues by representative apex. All
+other code is identical. The upstream implementation remains separately named
+`BBMOCBS-pex-legacy`; its output filtering/sorting now moves apex, cost and paths
+together rather than using filtered indices into the original costs.
+
+Both shared solvers memoize complete approximate path sets for MORE_SLACK searches
+with identical canonical per-agent constraints. Graph, endpoints, epsilon, turn
+settings and merge policy are constant within one run. Equivalent constraint
+orderings/deduplicated entries have the same feasible paths and deterministic
+search behavior. Each cached map is copied back into the node; solution or joint
+apex bookkeeping never mutates the cached per-agent data. Infeasibility can be
+cached only after normal search completion. The cache is local to a solver run,
+bounded by waypoint/entry counts, and disabled for conflict-based merging because
+its collision-avoidance table depends on the representative. Eviction affects only
+performance. `--low_level_cache false` disables it for comparisons.
+
+Regression checks compare optimized H to reference Dijkstra with both caches off,
+and validate the baseline separately against the independent joint-state oracle.
+The terminal runner independently recomputes all objective costs from the exported
+paths, then compares exact nondominated sets at epsilon zero or mutual coverage at
+positive epsilon. Neither timing wins nor matching approximate solution counts are
+used as correctness criteria.

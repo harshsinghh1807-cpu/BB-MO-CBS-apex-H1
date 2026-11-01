@@ -16,6 +16,7 @@
 #include "HighLevel/kSolver.h"
 #include "HighLevel/pexHSolver.h"
 #include <cmath>
+#include <iomanip>
 
 #include <boost/program_options.hpp>
 #include <boost/tokenizer.hpp>
@@ -48,7 +49,9 @@ desc.add_options()
     ("CB", po::value<std::string>()->default_value("false"), "if conflict-based")
     ("eager", po::value<std::string>()->default_value("false"), "eager solutions (legacy solvers only)")
     ("matching_limit,K", po::value<int>()->default_value(1), "maximum disjoint conflict pairs for pex-H (K >= 1)")
-    ("paths_file", po::value<std::string>()->default_value(""), "JSON solution paths, costs, apexes and completion status (pex-H)")
+    ("scalar_optimizations", po::value<std::string>()->default_value("true"), "exact A-star and scalar memoization for H (false for validation) ")
+    ("low_level_cache", po::value<std::string>()->default_value("true"), "memoize identical low-level searches when CB=false")
+    ("paths_file", po::value<std::string>()->default_value(""), "JSON solution paths, costs, apexes and completion status (shared pex solvers)")
 
     ("turn_dim", po::value<int>()->default_value(-1), "dimension with turn cost")
     ("turn_cost", po::value<int>()->default_value(5), "extra cost for turn action")
@@ -73,15 +76,16 @@ if (vm["agent_num"].as<int>() < 1 || vm["dim"].as<int>() < 2 || vm["dim"].as<int
     !std::isfinite(vm["eps"].as<double>()) || vm["eps"].as<double>() < 0 ||
     vm["turn_dim"].as<int>() < -1 || vm["turn_dim"].as<int>() >= vm["dim"].as<int>() || vm["turn_cost"].as<int>() < 0)
     throw std::invalid_argument("require n >= 1, d = 2 or 3, t >= 1, K >= 1, finite eps >= 0, and valid turn settings");
-for (const std::string option : {"CB", "eager"})
+for (const std::string option : {"CB", "eager", "scalar_optimizations", "low_level_cache"})
     if (vm[option].as<std::string>() != "true" && vm[option].as<std::string>() != "false")
         throw std::invalid_argument(option + " must be true or false");
 const auto algorithm = vm["algorithm"].as<std::string>();
-const bool is_h = algorithm == "BBMOCBS-pex-H" || algorithm == "BBMOCBS-apex-H1";
-if (is_h && vm["eager"].as<std::string>() == "true")
-    throw std::invalid_argument("pex-H follows the supplied non-eager algorithm; use --eager false");
-if (!is_h && !vm["paths_file"].as<std::string>().empty())
-    throw std::invalid_argument("--paths_file is supported by pex-H only");
+const bool is_h = algorithm == "BBMOCBS-pex-H" || algorithm == "BBMOCBS-pex-H1" || algorithm == "BBMOCBS-apex-H1";
+const bool is_shared = is_h || algorithm == "BBMOCBS-pex";
+if (is_shared && vm["eager"].as<std::string>() == "true")
+    throw std::invalid_argument("shared pex solvers follow the supplied non-eager algorithm; use --eager false (or select BBMOCBS-pex-legacy)");
+if (!is_shared && !vm["paths_file"].as<std::string>().empty())
+    throw std::invalid_argument("--paths_file is supported by the shared pex solvers only");
 
 std::unique_ptr<Logger> logger_owner;
 LoggerPtr logger = nullptr;
@@ -124,16 +128,19 @@ for(int i = 0; i < dim; i ++){
 
 // initialize solver
 std::unique_ptr<HighLevelSolver> h_solver;
-if (is_h) {
+if (is_shared) {
     auto solver = std::make_unique<pexHSolver>(map.graph_size, vm["agent_num"].as<int>(), dim, turn_dim, turn_cost, vm["time_limit"].as<int>());
     solver->set_eps(eps);
+    solver->set_use_heuristic(is_h);
+    solver->set_scalar_optimizations(vm["scalar_optimizations"].as<std::string>() == "true");
+    solver->set_low_level_cache(vm["low_level_cache"].as<std::string>() == "true");
     solver->set_matching_limit(vm["matching_limit"].as<int>());
     solver->set_merging_strategy(ms);
     h_solver = std::move(solver);
 } else if(vm["algorithm"].as<std::string>() == "BBMOCBS-eps"){
     h_solver = std::make_unique<epsSolver>(map.graph_size, vm["agent_num"].as<int>(), Algorithm::BBMOCBS_EPS, if_eager, dim, turn_dim, vm["turn_cost"].as<int>(), vm["time_limit"].as<int>());
     ((epsSolver*)h_solver.get())->set_eps(eps);
-}else if(vm["algorithm"].as<std::string>() == "BBMOCBS-pex"){
+}else if(vm["algorithm"].as<std::string>() == "BBMOCBS-pex-legacy"){
     h_solver = std::make_unique<pexSolver>(map.graph_size, vm["agent_num"].as<int>(), Algorithm::BBMOCBS_PEX, if_eager, dim, turn_dim, vm["turn_cost"].as<int>(), vm["time_limit"].as<int>());
     ((pexSolver*)h_solver.get())->set_eps(eps);
     ((pexSolver*)h_solver.get())->set_merging_strategy(ms);
@@ -174,14 +181,28 @@ output << "SolutionNum = " << SolutionNum << std::endl;
 std::cout << "FINISH ONCE" << std::endl;
 
 output.close();
-if (is_h) {
+if (is_shared) {
     const auto& solver = *static_cast<pexHSolver*>(h_solver.get());
     const auto filename = vm["paths_file"].as<std::string>();
     if (!filename.empty()) {
         std::ofstream json(filename);
         if (!json) throw std::runtime_error("cannot open paths JSON file");
-        json << "{\"algorithm\":\"BBMOCBS-pex-H\",\"completed\":" << (solver.completed() ? "true" : "false")
-             << ",\"epsilon\":" << eps << ",\"solutions\":[";
+        json << std::setprecision(std::numeric_limits<double>::max_digits10);
+        json << "{\"algorithm\":\"" << solver.algorithm_name() << "\",\"completed\":" << (solver.completed() ? "true" : "false")
+             << ",\"epsilon\":" << eps << ",\"objectives\":" << dim << ",\"matching_limit\":" << vm["matching_limit"].as<int>()
+             << ",\"statistics\":{\"total_seconds\":" << TotalTime << ",\"conflict_splits\":" << ConflictSolvingNum
+             << ",\"low_level_seconds\":" << LowLevelTime << ",\"merge_seconds\":" << HLMergingTime
+             << ",\"analysis_seconds\":" << solver.statistics().analysis_seconds
+             << ",\"scalar_seconds\":" << solver.statistics().scalar_seconds
+             << ",\"scalar_searches\":" << solver.statistics().scalar_searches
+             << ",\"scalar_cache_hits\":" << solver.statistics().scalar_cache_hits
+             << ",\"scalar_expansions\":" << solver.statistics().scalar_expansions
+             << ",\"low_level_searches\":" << solver.statistics().low_level_searches
+             << ",\"low_level_queries\":" << solver.statistics().low_level_queries
+             << ",\"low_level_cache_hits\":" << solver.statistics().low_level_cache_hits
+             << ",\"analyses\":" << solver.statistics().analyses
+             << ",\"children_pruned\":" << solver.statistics().children_pruned
+             << ",\"nodes_pruned\":" << solver.statistics().nodes_pruned << "},\"solutions\":[";
         bool first = true;
         for (const auto& solution : solver.solutions()) {
             if (!first) json << ',';

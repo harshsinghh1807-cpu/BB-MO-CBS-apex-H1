@@ -1,0 +1,17 @@
+agents,algorithm,solutions,conflict_splits,low_level_searches,low_level_cache_hits,scalar_searches,scalar_cache_hits,children_pruned,nodes_pruned,median_seconds,runs,all_paths_valid
+2,BB-MO-CBS-pex,2,0,2,0,0,0,0,0,0.00456642,3,True
+2,BB-MO-CBS-pex-H1,2,0,2,0,0,0,0,0,0.00470538,3,True
+4,BB-MO-CBS-pex,4,0,4,0,0,0,0,0,0.00646738,3,True
+4,BB-MO-CBS-pex-H1,4,0,4,0,0,0,0,0,0.00635146,3,True
+6,BB-MO-CBS-pex,3,0,6,0,0,0,0,0,0.00771842,3,True
+6,BB-MO-CBS-pex-H1,3,0,6,0,0,0,0,0,0.00775058,3,True
+8,BB-MO-CBS-pex,4,6,19,1,0,0,0,0,0.040298,3,True
+8,BB-MO-CBS-pex-H1,4,6,19,1,33,3,0,0,0.0406324,3,True
+10,BB-MO-CBS-pex,3,14,28,10,0,0,0,0,0.0399078,3,True
+10,BB-MO-CBS-pex-H1,3,14,33,5,69,45,0,0,0.0446254,3,True
+12,BB-MO-CBS-pex,7,50,68,44,0,0,0,0,0.938777,3,True
+12,BB-MO-CBS-pex-H1,5,49,58,38,198,666,14,0,0.456458,3,True
+14,BB-MO-CBS-pex,14,1860,759,2975,0,0,0,0,5.13213,3,True
+14,BB-MO-CBS-pex-H1,16,1551,685,2411,2748,21474,20,0,4.63452,3,True
+16,BB-MO-CBS-pex,23,1784,694,2890,0,0,0,0,4.95827,3,True
+16,BB-MO-CBS-pex-H1,18,1092,460,1729,1893,16923,11,0,3.49124,3,True

@@ -41,9 +41,11 @@ bool bound_covered(const std::vector<CostVector>& bounds, std::vector<Solution>&
 void add_solution(Solution solution, std::vector<Solution>& solutions, double eps);
 std::vector<Conflict> conflicts(const std::vector<std::vector<size_t>>& paths);
 void constrain(const Conflict& conflict, int side, VertexConstraint& vertices, EdgeConstraint& edges);
+using ScalarOracle = std::function<size_t(size_t, size_t, const VertexConstraint&, const EdgeConstraint&)>;
 Analysis analyze(const HighLevelNode& node, const std::vector<std::vector<size_t>>& representative,
                  const AdjacencyMatrix& graph, const std::vector<std::pair<size_t, size_t>>& endpoints,
-                 size_t k, int turn_dim, int turn_cost, Deadline deadline, size_t& scalar_searches);
+                 size_t k, int turn_dim, int turn_cost, Deadline deadline, size_t& scalar_searches,
+                 const ScalarOracle& oracle = {});
 }
 
 class pexHSolver : public HighLevelSolver {
@@ -53,9 +55,16 @@ public:
         size_t nodes_pruned = 0, children_pruned = 0, low_level_searches = 0;
         size_t max_matching = 0;
         size_t analysis_cache_hits = 0, representative_changes = 0;
+        size_t scalar_queries = 0, scalar_cache_hits = 0, scalar_expansions = 0;
+        double analysis_seconds = 0, scalar_seconds = 0;
+        size_t low_level_queries = 0, low_level_cache_hits = 0;
     };
     pexHSolver(size_t graph_size, int agent_num, int dim, int turn_dim, int turn_cost, int time_limit);
     void set_eps(double eps);
+    void set_use_heuristic(bool enabled) { use_heuristic_ = enabled; }
+    void set_scalar_optimizations(bool enabled) { scalar_optimizations_ = enabled; }
+    void set_low_level_cache(bool enabled) { low_level_cache_ = enabled; }
+    const char* algorithm_name() const { return use_heuristic_ ? "BBMOCBS-pex-H" : "BBMOCBS-pex"; }
     void set_matching_limit(size_t k);
     void set_merging_strategy(MergingStrategy strategy);
     const Statistics& statistics() const { return stats_; }
@@ -69,6 +78,8 @@ private:
         CostVector key;
         std::shared_ptr<const pexh::Analysis> analysis;
     };
+    bool use_heuristic_ = true, scalar_optimizations_ = true;
+    bool low_level_cache_ = true;
     double eps_ = 0;
     size_t k_ = 1;
     MergingStrategy strategy_ = MergingStrategy::MORE_SLACK;

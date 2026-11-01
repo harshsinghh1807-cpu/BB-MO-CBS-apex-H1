@@ -33,5 +33,5 @@ protected:
     void AddSolution(CostVector& apex, CostVector& cost, std::vector<std::vector<size_t>>& waypoints, std::vector<CostVector>& SOLUTIONS_apex, std::vector<CostVector>& SOLUTIONS_cost, HSolutionID& SOLUTIONS_waypoints);
     void EagerSolutionUpdate(HighLevelNodePtr node, std::vector<CostVector>& SOLUTIONS_apex, std::vector<CostVector>& SOLUTIONS_cost, HSolutionID& SOLUTIONS_waypoints);
     void calculate_CAT(HighLevelNodePtr node, VertexCAT& vertex_cat, EdgeCAT& edge_cat, int agent_id);
-    void post_process(std::vector<CostVector>& SOLUTIONS_apex, std::vector<CostVector>& SOLUTIONS_cost);
+    void post_process(std::vector<CostVector>& SOLUTIONS_apex, std::vector<CostVector>& SOLUTIONS_cost, HSolutionID& SOLUTIONS_waypoints);
 };
