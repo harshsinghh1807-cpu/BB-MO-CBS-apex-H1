@@ -1,0 +1,21 @@
+This project is derived from FangjiW/BBMOCBS-approx:
+https://github.com/FangjiW/BBMOCBS-approx
+Upstream snapshot: 09d4b7079a3446c61bd82d3be5a5418b0e4f7e53 (master).
+
+The original source and example files were obtained from that snapshot.
+The upstream LICENSE (GNU General Public License, version 3) is retained.
+The derivative additions are distributed under the same license.
+
+Changes made for BB-MO-CBS-apex-H1:
+- Added BB-MO-CBS-pex-H, exact constrained scalar search, conflict matching,
+  labeled lower bounds, transactional bound pruning and cached lazy priorities.
+- Added constraint-safe mode for ApexSearch (future goal constraints, bounded
+  single-agent horizon, time-zero constraints, reachability and deadlines).
+- Added CLI integration, JSON path export, examples, validation and documentation.
+- Updated portable CMake/compiler usage, strict comparison helpers, merge tie
+  arithmetic, base-class destruction, and input error handling.
+- Removed generated upstream build artifacts from the distributed source tree.
+
+The baseline solver implementations remain available; the new algorithm is
+implemented in pexHSolver.cpp and ConflictAnalysis.cpp rather than silently
+replacing the original pexSolver run loop.

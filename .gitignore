@@ -1,0 +1,8 @@
+/build/
+/build-*/
+*.log
+/output*.txt
+*.zip
+.DS_Store
+__pycache__/
+*.pyc
